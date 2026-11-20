@@ -55,7 +55,34 @@ function norm(e,t){const c=e.competitions?.[0]||{},cs=c.competitors||[];const ou
 const when=g=>fmt(g.date,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+' CT';
 function gameLine(g){return `<div class="game"><strong>${g.home?'vs':'@'} ${esc(g.opponent)}</strong><small>${esc(when(g))} · ${esc(g.tv)}${g.live?' · 🔴 LIVE':''}</small></div>`}
 function teamCard(t){const g=t.games?.[0],head=g?`${g.home?'vs':'@'} ${esc(g.opponent)} · ${esc(when(g))}`:t.loaded?'No upcoming games listed':'Schedule unavailable';return `<details class="team ${t.theme}"><summary><div class="teamhead"><div><div class="teamname">${t.emoji} ${esc(t.name)}</div><div class="hint">${esc(t.league.toUpperCase())}</div></div><div><div class="record">${esc(t.record)}</div><div class="standing">${esc(t.standing)}</div></div></div><div class="next">${head}</div><div class="hint">${g?esc(g.tv)+' · ':''}Tap for schedule ▾</div></summary><div class="games">${t.games?.length?t.games.map(gameLine).join(''):'<div class="hint">No upcoming games available.</div>'}</div></details>`}
-async function getTeam(t){const base=`https://site.api.espn.com/apis/site/v2/sports/${t.sport}/${t.league}/teams/${t.id}`;let record='Unavailable',rank='Standing unavailable',games=[],loaded=false;try{const d=await fetchJSON(base);record=getRecord(d);rank=standing(d,t)}catch(e){}try{const d=await fetchJSON(base+'/schedule');loaded=true;if(record==='Unavailable')record=getRecord(d);games=(d.events||d.team?.schedule||[]).map(e=>norm(e,t)).filter(g=>g&&!g.completed&&(Date.parse(g.date)>=Date.now()-21600000||g.live)).sort((a,b)=>Date.parse(a.date)-Date.parse(b.date)).slice(0,3)}catch(e){}if(t.league==='nhl'){try{const d=await fetchJSON('https://api-web.nhle.com/v1/standings/now');const h=d.standings.find(x=>x.teamAbbrev?.default==='CHI');if(!h||![h.wins,h.losses,h.otLosses].every(Number.isInteger))throw Error('Incomplete');record=`${h.wins}-${h.losses}-${h.otLosses}`;rank=Number.isInteger(h.divisionSequence)?`${h.divisionSequence} · Central Division`:'Standing unavailable'}catch(e){if(!/^\d+-\d+-\d+$/.test(record))record='W-L-OT unavailable'}}return{...t,record,standing:rank,games,loaded}}
+async function getTeam(t){const base=`https://site.api.espn.com/apis/site/v2/sports/${t.sport}/${t.league}/teams/${t.id}`;let record='Unavailable',rank='Standing unavailable',games=[],loaded=false;try{const d=await fetchJSON(base);record=getRecord(d);rank=await getDivisionRank(t)||standing(d,t)}catch(e){}try{const d=await fetchJSON(base+'/schedule');loaded=true;if(record==='Unavailable')record=getRecord(d);games=(d.events||d.team?.schedule||[]).map(e=>norm(e,t)).filter(g=>g&&!g.completed&&(Date.parse(g.date)>=Date.now()-21600000||g.live)).sort((a,b)=>Date.parse(a.date)-Date.parse(b.date)).slice(0,3)}catch(e){}if(t.league==='nhl'){try{const d=await fetchJSON('https://api-web.nhle.com/v1/standings/now');const h=d.standings.find(x=>x.teamAbbrev?.default==='CHI');if(!h||![h.wins,h.losses,h.otLosses].every(Number.isInteger))throw Error('Incomplete');record=`${h.wins}-${h.losses}-${h.otLosses}`;rank=Number.isInteger(h.divisionSequence)?`${h.divisionSequence} · Central Division`:'Standing unavailable'}catch(e){if(!/^\d+-\d+-\d+$/.test(record))record='W-L-OT unavailable'}}return{...t,record,standing:rank,games,loaded}}
+
+async function getDivisionRank(t){
+  if(!['nfl','nba'].includes(t.league)) return null;
+  const url=`https://site.api.espn.com/apis/v2/sports/${t.sport}/${t.league}/standings`;
+  const data=await fetchJSON(url);
+  function findTeam(node){
+    if(!node||typeof node!=='object') return null;
+    if(node.team?.abbreviation===t.abbr && Array.isArray(node.stats))
+      return node;
+    if(Array.isArray(node)){
+      for(const item of node){
+        const found=findTeam(item);
+        if(found)return found;
+      }
+    }else{
+      for(const value of Object.values(node)){
+        const found=findTeam(value);
+        if(found)return found;
+      }
+    }
+    return null;
+  }
+  const entry=findTeam(data);
+  const stat=entry?.stats?.find(s=>s.name==='divisionRank');
+  return stat?.displayValue ? `${stat.displayValue} · Division` : null;
+}
+
 async function renderTeams(){const teams=await Promise.all(TEAMS.map(getTeam));$('chicago').innerHTML=teams.filter(t=>t.group==='chicago').map(teamCard).join('');$('northwestern').innerHTML=teams.filter(t=>t.group==='northwestern').map(teamCard).join('')}
 async function renderToday(){const key=todayKey(),ymd=key.replace(/-/g,'');const result=await Promise.all(TEAMS.map(async t=>{try{const d=await fetchJSON(`https://site.api.espn.com/apis/site/v2/sports/${t.sport}/${t.league}/scoreboard?dates=${ymd}&limit=200`);return(d.events||[]).map(e=>norm(e,t)).filter(g=>g&&fmt(g.date,{year:'numeric',month:'2-digit',day:'2-digit'}).replace(/(\d\d)\/(\d\d)\/(\d{4})/,'$3-$1-$2')===key)}catch(e){return null}}));const available=result.filter(x=>x!==null),games=available.flat();$('today').innerHTML=games.length?games.sort((a,b)=>Date.parse(a.date)-Date.parse(b.date)).map(g=>`<div class="card todaygame ${g.live?'live':g.completed?'final':''}"><div class="teamhead"><strong>${g.emoji} ${esc(g.team)}</strong><span class="tag">${g.live?'🔴 LIVE':g.completed?'FINAL':'TODAY'}</span></div><div class="next">${g.home?'vs':'@'} ${esc(g.opponent)}</div><div class="hint">${esc(when(g))} · ${esc(g.tv)}${g.status?' · '+esc(g.status):''}</div>${g.live||g.completed?`<div class="next"><strong>${esc(g.score.map(s=>s.name+' '+(s.score??'—')).join(' · '))}</strong></div>`:''}</div>`).join(''):available.length===0?'<div class="card error">Today’s sports feeds are unavailable in Safari. A proxy may be required.</div>':'<div class="card muted">No Chicago or Northwestern games listed today.</div>'}
 async function renderMarket(){try{const d=await fetchJSON('https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=5d');const m=d.chart.result[0].meta,p=Number(m.regularMarketPrice),prev=Number(m.previousClose||m.chartPreviousClose);if(!Number.isFinite(p)||!Number.isFinite(prev))throw Error('No quote');const diff=p-prev,pct=diff/prev*100;$('market').innerHTML=`<div class="muted">S&amp;P 500 · ^GSPC</div><div class="market-value">${p.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</div><strong class="${diff>=0?'up':'down'}">${diff>=0?'+':''}${diff.toFixed(2)} (${diff>=0?'+':''}${pct.toFixed(2)}%)</strong><div class="hint">Latest available quote · may be delayed</div>`}catch(e){$('market').innerHTML='<div class="muted">S&amp;P 500 · ^GSPC</div><div class="error">Market quote unavailable in Safari (source may block browser access).</div>'}}
