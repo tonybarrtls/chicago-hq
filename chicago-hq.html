@@ -59,28 +59,32 @@ async function getTeam(t){const base=`https://site.api.espn.com/apis/site/v2/spo
 
 async function getDivisionRank(t){
   if(!['nfl','nba'].includes(t.league)) return null;
+  const division=t.league==='nfl'?'NFC North':'Central';
+  const label=t.league==='nfl'?'NFC North':'Central Division';
   const url=`https://site.api.espn.com/apis/v2/sports/${t.sport}/${t.league}/standings`;
   const data=await fetchJSON(url);
-  function findTeam(node){
-    if(!node||typeof node!=='object') return null;
-    if(node.team?.abbreviation===t.abbr && Array.isArray(node.stats))
-      return node;
-    if(Array.isArray(node)){
-      for(const item of node){
-        const found=findTeam(item);
-        if(found)return found;
+  // ESPN supplies division rankings as ordered division groups, not a divisionRank stat.
+  function walk(node){
+    if(!node||typeof node!=='object')return null;
+    if(!Array.isArray(node)){
+      const name=[node.name,node.abbreviation,node.shortName,node.displayName,node.group?.name].filter(Boolean).join(' ');
+      const isDivision=t.league==='nfl'?/NFC North/i.test(name):/(^|\b)Central(\b|$)/i.test(name)&&!/NFC|AFC/i.test(name);
+      const entries=node.standings?.entries||node.entries;
+      if(isDivision&&Array.isArray(entries)){
+        const idx=entries.findIndex(e=>e.team?.abbreviation===t.abbr || String(e.team?.id)===String(t.id));
+        if(idx>=0){
+          const rank=entries[idx].stats?.find(s=>s.name==='divisionRank'||s.name==='divisionStanding');
+          const value=Number(rank?.value??rank?.displayValue);
+          return `${Number.isInteger(value)&&value>0?value:idx+1} · ${label}`;
+        }
       }
-    }else{
-      for(const value of Object.values(node)){
-        const found=findTeam(value);
-        if(found)return found;
-      }
+    }
+    for(const child of (Array.isArray(node)?node:Object.values(node))){
+      const result=walk(child);if(result)return result;
     }
     return null;
   }
-  const entry=findTeam(data);
-  const stat=entry?.stats?.find(s=>s.name==='divisionRank');
-  return stat?.displayValue ? `${stat.displayValue} · Division` : null;
+  return walk(data);
 }
 
 async function renderTeams(){const teams=await Promise.all(TEAMS.map(getTeam));$('chicago').innerHTML=teams.filter(t=>t.group==='chicago').map(teamCard).join('');$('northwestern').innerHTML=teams.filter(t=>t.group==='northwestern').map(teamCard).join('')}
